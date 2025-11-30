@@ -170,9 +170,14 @@ class MeetingExporter:
         if agenda:
             doc.add_heading("Agenda", level=2)
             for item in agenda:
-                title = self._sanitize(item.get("title", ""))
-                if title:
-                    doc.add_paragraph(f"• {title}", style="List Bullet")
+                title = item.get("title", "")
+                if not title.strip():
+                    continue
+
+                # sanitization AFTER skipping empty titles
+                title = self._sanitize(title)
+                p = doc.add_paragraph(style="List Bullet")
+                p.add_run(title)
             doc.add_paragraph("----")
 
         # Summary (bullet points only)
