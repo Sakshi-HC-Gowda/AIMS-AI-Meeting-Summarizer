@@ -15,3 +15,5 @@ build/
 secrets.toml
 *.toml
 *.env
+.local/api_temp/
+frontend/node_modules/
