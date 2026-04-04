@@ -3,10 +3,12 @@ from io import BytesIO
 from flask import Blueprint, request, send_file
 
 from backend.services.meeting_service import MeetingService
+from backend.services.recording_service import RecordingService
 from backend.utils.http import error, success
 
 api = Blueprint("api", __name__)
 meeting_service = MeetingService()
+recording_service = RecordingService()
 
 
 @api.get("/health")
@@ -108,3 +110,123 @@ def send_email():
         return success({}, "Email sent successfully.")
     except Exception as exc:
         return error("Failed to send email.", 500, str(exc))
+
+
+# ==================== RECORDING & TRANSCRIPTION ENDPOINTS ====================
+
+@api.post("/recording/start")
+def start_recording_session():
+    """
+    Start a new recording session.
+    Returns session_id for tracking the recording.
+    """
+    try:
+        session_data = recording_service.create_recording_session()
+        return success(
+            {"session_id": session_data["session_id"]},
+            "Recording session started."
+        )
+    except Exception as exc:
+        return error("Failed to start recording session.", 500, str(exc))
+
+
+@api.post("/recording/transcribe")
+def record_and_transcribe():
+    """
+    Receive audio data and transcribe using faster-whisper.
+    Supports chunked/streaming transcription or direct upload.
+    
+    Expects:
+    - audio: Binary audio file (WAV, MP3, etc.)
+    - session_id: Session identifier (optional, for tracking)
+    - language: Language code (optional, for auto-detect use None)
+    """
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return error("Audio file is required under the 'audio' field.", 400)
+
+    try:
+        session_id = request.form.get("session_id", "unknown")
+        language = request.form.get("language")
+        
+        print(f"[DEBUG] Received audio file: {audio_file.filename}, size: {len(audio_file.read())} bytes")
+        audio_file.seek(0)  # Reset file pointer after reading size
+        
+        # Transcribe audio
+        transcript = meeting_service.transcribe_audio_file(audio_file, language=language)
+        
+        # Save to recording session
+        if session_id != "unknown":
+            recording_service.save_transcription(session_id, transcript)
+        
+        # Return transcript for immediate editing
+        return success(
+            {
+                "session_id": session_id,
+                "transcript": transcript,
+            },
+            "Audio transcribed successfully. Edit transcript before summarizing."
+        )
+    except Exception as exc:
+        import traceback
+        print(f"❌ [ERROR] Transcription failed: {str(exc)}")
+        print(f"[TRACEBACK] {traceback.format_exc()}")
+        return error("Failed to transcribe recording.", 500, str(exc))
+
+
+@api.post("/recording/edit")
+def edit_transcript():
+    """
+    Update transcription text before summarization.
+    
+    Expects:
+    - session_id: Session identifier
+    - edited_text: Edited transcript text
+    """
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    edited_text = body.get("edited_text", "")
+    
+    if not session_id:
+        return error("session_id is required.", 400)
+    if not edited_text.strip():
+        return error("edited_text is required.", 400)
+
+    try:
+        updated_session = recording_service.edit_transcription(session_id, edited_text)
+        return success(
+            updated_session,
+            "Transcript updated successfully."
+        )
+    except Exception as exc:
+        return error("Failed to update transcript.", 500, str(exc))
+
+
+@api.get("/recording/<session_id>")
+def get_recording_session(session_id):
+    """
+    Retrieve transcription data for a recording session.
+    """
+    try:
+        session_data = recording_service.get_transcription(session_id)
+        if session_data:
+            return success(session_data, "Session data retrieved.")
+        else:
+            return error("Session not found.", 404)
+    except Exception as exc:
+        return error("Failed to retrieve session.", 500, str(exc))
+
+
+@api.get("/recording/list/all")
+def list_recording_sessions():
+    """
+    List all recorded sessions with metadata.
+    """
+    try:
+        sessions = recording_service.list_sessions()
+        return success(
+            {"sessions": sessions},
+            f"Found {len(sessions)} recording sessions."
+        )
+    except Exception as exc:
+        return error("Failed to list sessions.", 500, str(exc))

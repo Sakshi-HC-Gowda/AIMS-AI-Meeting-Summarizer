@@ -9,32 +9,65 @@ import pdfplumber
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
-from backend.config import Config
+from config import Config
 
 PROJECT_ROOT = Config.PROJECT_ROOT
 if str(PROJECT_ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(PROJECT_ROOT))
 
 from audio_processing.diarize import diarize_audio
-from audio_processing.transcribe import transcribe_with_whisper
+from audio_processing.transcribe import transcribe_with_whisper, transcribe_audio_bytes
 from audio_processing.transcript_parser import (
     has_timestamp_format,
     parse_transcript_with_timestamps,
 )
 from email_utils import send_summary_email
 from export_utils import MeetingExporter
-from summarizer.bart_summarizer import (
-    build_topic_bullets_from_chunks,
-    merge_bullet_summaries,
+from summarizer.ollama_summarizer import (
+    build_topic_bullets_from_chunks_ollama as build_topic_bullets_from_chunks,
+    merge_bullet_summaries_ollama as merge_bullet_summaries,
     merge_summaries_text,
-    summarize_chunks_bart,
-    summarize_global,
+    summarize_chunks_ollama as summarize_chunks_bart,
+    summarize_global_ollama as summarize_global,
+    warmup_ollama_model,
 )
 from summarizer.structure_formatter import (
     build_structure,
     extract_decisions_and_actions,
 )
 from summarizer.summarize import chunk_transcript
+
+
+def convert_audio_to_wav(file_path: str) -> str:
+    """
+    Convert audio file to WAV format (faster-whisper compatible).
+    Uses librosa for robust audio loading of various formats (webm, mp4, mp3, etc.)
+    Returns path to the WAV file, or original file if conversion fails.
+    """
+    import librosa
+    import soundfile as sf
+    
+    file_path_obj = Path(file_path)
+    suffix = file_path_obj.suffix.lower()
+    
+    # If already WAV, return as-is
+    if suffix == ".wav":
+        return file_path
+    
+    try:
+        print(f"[INFO] Converting {suffix} audio to WAV using librosa...")
+        # Load audio with librosa (handles webm, mp4, mp3, etc.)
+        audio_data, sr = librosa.load(file_path, sr=16000, mono=True)
+        print(f"[INFO] Loaded audio: {len(audio_data)} samples at {sr}Hz, duration: {len(audio_data)/sr:.1f}s")
+        
+        wav_path = str(file_path_obj.parent / f"{file_path_obj.stem}_converted.wav")
+        # Save as WAV
+        sf.write(wav_path, audio_data, sr)
+        print(f"[INFO] Audio converted to WAV: {wav_path}")
+        return wav_path
+    except Exception as e:
+        print(f"[WARN] Audio conversion failed ({e}). Using original file: {file_path}")
+        return file_path
 
 
 def sanitize_summary_text(text: str) -> str:
@@ -100,6 +133,9 @@ class MeetingService:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.exporter = MeetingExporter(header_image_path=str(PROJECT_ROOT / "college_header.jpg"))
 
+        if Config.OLLAMA_WARMUP:
+            warmup_ollama_model()
+
     def _save_upload(self, file: FileStorage) -> Path:
         suffix = Path(file.filename or "audio.wav").suffix or ".wav"
         safe_name = secure_filename(Path(file.filename or "meeting-audio").stem) or "meeting-audio"
@@ -151,19 +187,90 @@ class MeetingService:
         }
 
     def transcribe_audio_file(self, file: FileStorage, language: Optional[str] = None) -> Dict:
+        print(f"[INFO] Starting transcription for file: {file.filename}")
         audio_path = self._save_upload(file)
+        print(f"[INFO] Audio saved to: {audio_path}")
+        
+        # Check file size
+        file_size = audio_path.stat().st_size if audio_path.exists() else 0
+        print(f"[INFO] Audio file size: {file_size} bytes")
+        if file_size < 100:
+            raise ValueError(f"Audio file too small ({file_size} bytes). Recording may not have captured audio properly.")
+        
+        # Convert to WAV if needed (webm, mp4, etc.)
+        wav_audio_path = convert_audio_to_wav(str(audio_path))
+        print(f"[INFO] Using audio file: {wav_audio_path}")
+
         transcript = transcribe_with_whisper(
-            str(audio_path),
+            wav_audio_path,
             model_name=Config.WHISPER_MODEL,
             language=language,
         )
-        if transcript.get("error"):
-            raise RuntimeError(transcript["error"])
+        print(f"[INFO] Transcription result: {len(transcript.get('text', ''))} characters")
+
+        if transcript.get("error") or not transcript.get("text"):
+            # Fallback path: try the next faster-whisper model size for robustness
+            fallback_error = None
+            tried_models = []
+            # Only try faster-whisper models (no Vosk), all run locally offline
+            candidates = ["base", "small"]
+
+            for candidate in candidates:
+                if transcript.get("text"):
+                    break
+                tried_models.append(candidate)
+                try:
+                    fallback = transcribe_with_whisper(wav_audio_path, model_name=candidate, language=language)
+                    if fallback.get("text"):
+                        transcript = fallback
+                        break
+                    else:
+                        fallback_error = fallback.get("error") or f"{candidate} returned empty text"
+                except Exception as candidate_exc:
+                    fallback_error = str(candidate_exc)
+
+            if not transcript.get("text"):
+                underlying_msg = transcript.get("error") if transcript.get("error") else "No text"
+                raise RuntimeError(
+                    f"Transcription failed (whisper models tried: {', '.join(tried_models)}). "
+                    f"Last error: {underlying_msg}. Fallback error: {fallback_error}"
+                )
+
+        text_result = (transcript.get("text") or "").strip()
+
+        # Extra fallback: if text is extremely short, retry with a more robust offline model
+        if len(text_result.split()) <= 3:
+            try:
+                if Config.WHISPER_MODEL == "tiny":
+                    next_model = "base"
+                else:
+                    next_model = "tiny"
+                print(f"[WARN] Very short transcript ({len(text_result.split())} words). Retrying with {next_model}...")
+                fallback_transcript = transcribe_with_whisper(
+                    wav_audio_path,
+                    model_name=next_model,
+                    language=language,
+                )
+                fallback_text = (fallback_transcript.get("text") or "").strip()
+                if len(fallback_text.split()) > len(text_result.split()):
+                    print(f"[INFO] Fallback text from {next_model} gives {len(fallback_text.split())} words")
+                    transcript = fallback_transcript
+                    text_result = fallback_text
+            except Exception as e:
+                print(f"[WARN] Fallback model failed: {e}")
+
+        if not text_result:
+            # Provide clearer end-user feedback for very short/empty recordings
+            raise RuntimeError(
+                "No speech detected in audio. "
+                "Please record at least 8 seconds of clear speech with your microphone unmuted."
+            )
 
         return {
             "audio_filename": file.filename,
             "audio_path": str(audio_path),
-            "transcript": transcript.get("text", "").strip(),
+            "transcript": text_result,
+            "text": text_result,
             "segments": transcript.get("segments", []),
         }
 
@@ -192,18 +299,10 @@ class MeetingService:
         full_text = parsed["full_text"]
 
         chunks = chunk_transcript(segments, max_chars=2200)
-        chunk_summaries = summarize_chunks_bart(
-            chunks,
-            model_name=Config.SUMMARIZER_MODEL,
-            device=Config.TRANSFORMER_DEVICE,
-        )
+        chunk_summaries = summarize_chunks_bart(chunks)  # Ollama functions don't need model_name/device params
         merged_text = merge_summaries_text(chunk_summaries)
         topic_summary = build_topic_bullets_from_chunks(chunk_summaries)
-        global_summary = summarize_global(
-            merged_text,
-            model_name=Config.SUMMARIZER_MODEL,
-            device=Config.TRANSFORMER_DEVICE,
-        )
+        global_summary = summarize_global(merged_text)  # Ollama functions don't need model_name/device params
 
         final_summary = merge_bullet_summaries(topic_summary, global_summary) if topic_summary else global_summary
         final_summary = sanitize_summary_text(final_summary)
