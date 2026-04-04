@@ -1,6 +1,7 @@
 import { FileAudio, FileText, Files, UploadCloud } from "lucide-react";
 import SectionCard from "./SectionCard";
 import InputMethodTabs from "./InputMethodTabs";
+import RecordingStep from "./RecordingStep";
 
 export default function UploadSourcePage({
   inputMethods,
@@ -10,15 +11,23 @@ export default function UploadSourcePage({
   setInputs,
   handleTxtUpload,
 }) {
+  const handleTranscriptReady = (transcriptText) => {
+    setInputs((current) => ({ ...current, pastedText: transcriptText }));
+  };
+
   return (
     <div className="space-y-6">
       <SectionCard
         title="Source Intake"
-        subtitle="Upload recordings, documents, or paste transcript text directly."
+        subtitle="Record meetings, upload recordings, documents, or paste transcript text directly."
         icon={UploadCloud}
       >
         <div className="space-y-6">
           <InputMethodTabs methods={inputMethods} activeMethod={inputMethod} onChange={setInputMethod} />
+
+          {inputMethod === "record" ? (
+            <RecordingStep onTranscriptReady={handleTranscriptReady} />
+          ) : null}
 
           {inputMethod === "audio" ? (
             <label className="block rounded-3xl border border-dashed border-slate-300 bg-white/90 p-8 text-center">

@@ -8,6 +8,9 @@ reportlab>=4.4.4
 scikit-learn>=1.7.2
 spacy>=3.8.7
 
+# HTTP requests for Ollama API
+requests>=2.31.0
+
 # ML/AI Dependencies (Required for summarization)
 transformers>=4.30.0
 torch>=2.0.0
@@ -15,9 +18,14 @@ sentencepiece>=0.1.99
 protobuf>=3.20.0
 
 # Audio Processing (Optional - for audio transcription)
-# Install at least one: whisper OR whisperx
-openai-whisper>=20231117
-# whisperx>=3.1.1  # Alternative to whisper, uncomment if preferred
+# vosk: Fast, lightweight offline speech recognition
+# vosk>=0.3.45
+# faster-whisper: Optimized Whisper - 4-5x faster, runs offline (alternative)
+faster-whisper>=1.0.0
+pyaudio>=0.2.13  # For live audio recording
+
+# Note: openai-whisper removed - use faster-whisper instead
+# faster-whisper is compatible with openai-whisper's interface
 
 # Speaker Diarization (Optional - for better speaker identification)
 pyannote.audio>=3.1.0

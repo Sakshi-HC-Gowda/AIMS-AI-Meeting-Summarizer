@@ -17,12 +17,12 @@ from audio_processing.transcribe import transcribe_audio
 from audio_processing.diarize import diarize_audio
 from audio_processing.transcript_parser import parse_transcript_with_timestamps, has_timestamp_format
 from summarizer.summarize import chunk_transcript
-from summarizer.bart_summarizer import (
-    summarize_chunks_bart,
+from summarizer.ollama_summarizer import (
+    summarize_chunks_ollama as summarize_chunks_bart,
     merge_summaries_text,
-    summarize_global,
-    build_topic_bullets_from_chunks,
-    merge_bullet_summaries,
+    summarize_global_ollama as summarize_global,
+    build_topic_bullets_from_chunks_ollama as build_topic_bullets_from_chunks,
+    merge_bullet_summaries_ollama as merge_bullet_summaries,
 )
 from summarizer.structure_formatter import build_structure
 

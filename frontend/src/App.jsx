@@ -6,6 +6,7 @@ import {
   FileText,
   FolderUp,
   LayoutDashboard,
+  Mic,
   Save,
   Send,
   Share2,
@@ -31,6 +32,7 @@ const navItems = [
 ];
 
 const inputMethods = [
+  { id: "record", label: "Live Recording", icon: Mic },
   { id: "audio", label: "Audio Upload", icon: FileAudio },
   { id: "text", label: "Paste Text", icon: FileText },
   { id: "txt", label: "TXT File", icon: FileText },
@@ -217,6 +219,7 @@ export default function App() {
 
   function currentSourceLabel() {
     if (inputMethod === "audio" && inputs.audioFile) return `Audio source: ${inputs.audioFile.name}`;
+    if (inputMethod === "record" && inputs.pastedText.trim()) return `Live recording: ${inputs.pastedText.trim().split(/\s+/).length} words (${Math.ceil(inputs.pastedText.split(/\s+/).length / 150)} minutes estimated)`;
     if (inputMethod === "text" && inputs.pastedText.trim()) return `Pasted transcript with ${inputs.pastedText.trim().split(/\s+/).length} words`;
     if (inputMethod === "txt" && inputs.txtFile) return `Text document: ${inputs.txtFile.name}`;
     if (inputMethod === "pdf" && inputs.pdfFile) return `PDF document: ${inputs.pdfFile.name}`;
@@ -224,7 +227,7 @@ export default function App() {
   }
 
   function canProcess() {
-    if (inputMethod === "text") return Boolean(inputs.pastedText.trim());
+    if (inputMethod === "text" || inputMethod === "record") return Boolean(inputs.pastedText.trim());
     return Boolean(activeFile());
   }
 
@@ -262,7 +265,7 @@ export default function App() {
       const payload =
         inputMethod === "audio"
           ? { file: inputs.audioFile, text: "" }
-          : inputMethod === "text"
+          : inputMethod === "text" || inputMethod === "record"
             ? { file: null, text: inputs.pastedText }
             : inputMethod === "txt"
               ? { file: inputs.txtFile, text: "" }
